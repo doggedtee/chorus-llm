@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  # ── API server ─────────────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: mega-ai-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DATABASE_URL=sqlite:////app/db_data/mega_ai.db
+      - RESEARCH_DB_PATH=/app/data/research.db
+    volumes:
+      - .:/app                       # mount source for hot-reload
+      - db_data:/app/db_data
+      - research_data:/app/data
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Background worker (eval + meta agent) ──────────────────────────────────
+  worker:
+    build: .
+    container_name: mega-ai-worker
+    command: ["python", "-m", "worker.main"]
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DATABASE_URL=sqlite:////app/db_data/mega_ai.db
+      - RESEARCH_DB_PATH=/app/data/research.db
+      - WORKER_POLL_SEC=${WORKER_POLL_SEC:-30}
+      - RUN_EVAL_ON_START=${RUN_EVAL_ON_START:-false}
+    volumes:
+      - db_data:/app/db_data
+      - research_data:/app/data
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Log query interface (SQLite Web UI) ────────────────────────────────────
+  logs:
+    image: coleifer/sqlite-web
+    container_name: mega-ai-logs
+    ports:
+      - "${LOGS_PORT:-8080}:8080"
+    command: ["sqlite_web", "-H", "0.0.0.0", "-x", "/data/mega_ai.db"]
+    volumes:
+      - db_data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  research_data:
