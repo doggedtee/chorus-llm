@@ -8,6 +8,7 @@ from agents.retrieval import retrieval_agent
 from agents.critique import critique_agent
 from agents.synthesis import synthesis_agent
 from agents.compression import compression_agent
+from tools.self_reflection import self_reflect
 
 
 # ── async wrappers — handle logging, budget checks BEFORE running ────────────
@@ -126,6 +127,12 @@ async def run_synthesis(context: SharedContext) -> SharedContext:
         violation_detail=f"{tokens}/{budget.get_budget('synthesis')} tokens" if violated else None,
     )
     await emit_budget(context.job_id, budget.summary())
+
+    result = self_reflect(context)
+    if result.has_contradictions:
+        for c in result.contradictions:
+            print(f"[self_reflection] {c}")
+
     return context
 
 
