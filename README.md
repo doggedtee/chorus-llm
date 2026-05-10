@@ -1,4 +1,4 @@
-# Mega AI — Multi-Agent LLM Orchestration & Evaluation System
+# Chorus-LLM — Multi-Agent LLM Orchestration & Evaluation System
 
 A containerized, production-grade multi-agent research assistant with dynamic
 routing, self-improving prompt loop, adversarial evaluation, and real-time
