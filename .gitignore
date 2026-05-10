@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+
+# secrets & local config
+.env
+.env.local
+
+# databases (created at runtime)
+*.db
+mega_ai.db
+data/research.db
+db_data/
+
+# editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# logs
+*.log
