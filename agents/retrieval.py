@@ -110,8 +110,13 @@ def retrieval_agent(context: SharedContext) -> SharedContext:
         all_chunks = []
         task_outputs: dict[str, str] = {}  # task_id → Claude output for that task
 
-        for task in context.sub_tasks:
-            if task.dependencies:
+        while True:
+            pending = [t for t in context.sub_tasks if t.status != "completed"]
+            if not pending:
+                break
+
+            progress = False
+            for task in pending:
                 dep_done = all(
                     any(t.task_id == dep and t.status == "completed" for t in context.sub_tasks)
                     for dep in task.dependencies
@@ -119,37 +124,42 @@ def retrieval_agent(context: SharedContext) -> SharedContext:
                 if not dep_done:
                     continue
 
-            chunks = _retrieve_for_task(task.description, tool_logger)
-            for chunk in chunks:
-                chunk.used_for = task.task_id
-            all_chunks.extend(chunks)
+                chunks = _retrieve_for_task(task.description, tool_logger)
+                for chunk in chunks:
+                    chunk.used_for = task.task_id
+                all_chunks.extend(chunks)
 
-            # build prompt with dependency outputs as context
-            dep_context = "\n\n".join(
-                f"Output of {dep_id}:\n{task_outputs[dep_id]}"
-                for dep_id in task.dependencies
-                if dep_id in task_outputs
-            )
+                dep_context = "\n\n".join(
+                    f"Output of {dep_id}:\n{task_outputs[dep_id]}"
+                    for dep_id in task.dependencies
+                    if dep_id in task_outputs
+                )
 
-            chunks_text = "\n\n".join(
-                f"[{chunk.chunk_id}] (source: {chunk.source})\n{chunk.content}"
-                for chunk in chunks
-            )
+                chunks_text = "\n\n".join(
+                    f"[{chunk.chunk_id}] (source: {chunk.source})\n{chunk.content}"
+                    for chunk in chunks
+                )
 
-            response = llm.invoke([
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=(
-                    f"Sub-task: {task.description}\n\n"
-                    + (f"Context from previous tasks:\n{dep_context}\n\n" if dep_context else "")
-                    + f"Retrieved chunks:\n{chunks_text}\n\n"
-                    f"Answer this sub-task using the chunks with inline citations."
-                )),
-            ])
+                response = llm.invoke([
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    HumanMessage(content=(
+                        f"Sub-task: {task.description}\n\n"
+                        + (f"Context from previous tasks:\n{dep_context}\n\n" if dep_context else "")
+                        + f"Retrieved chunks:\n{chunks_text}\n\n"
+                        f"Answer this sub-task using the chunks with inline citations."
+                    )),
+                ])
 
-            task_outputs[task.task_id] = response.content.strip()
-            token_count = (response.usage_metadata or {}).get("total_tokens", 0)
-            context.record_tokens("retrieval", token_count)
-            task.status = "completed"
+                task_outputs[task.task_id] = response.content.strip()
+                token_count = (response.usage_metadata or {}).get("total_tokens", 0)
+                context.record_tokens("retrieval", token_count)
+                task.status = "completed"
+                progress = True
+
+            if not progress:
+                # no task could run this pass — circular dependency or bad graph
+                print(f"[retrieval] stuck — {len(pending)} tasks have unresolvable dependencies")
+                break
 
         context.retrieved_chunks = all_chunks
         context.task_outputs = task_outputs
