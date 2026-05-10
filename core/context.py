@@ -87,6 +87,9 @@ class SharedContext(BaseModel):
     token_usage: Dict[str, int] = {}        # {agent_id: tokens_used}
     budget_violations: List[str] = []       # agent_ids that violated budget
 
+    # retrieval agent fills this — per sub-task Claude outputs
+    task_outputs: Dict[str, str] = {}  # task_id → reasoning output
+
     # tool call results (latest per tool)
     tool_results: Dict[str, Any] = {}
 

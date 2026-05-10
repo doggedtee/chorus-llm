@@ -30,9 +30,7 @@ async def synthesis_agent(context: SharedContext) -> SharedContext:
     Reads all agent outputs and critiqued claims from context.
     Resolves contradictions flagged by critique agent.
     """
-    retrieval_output = context.get_agent_output("retrieval")
-
-    if not retrieval_output:
+    if not context.task_outputs:
         context.final_answer = "Insufficient information to generate an answer."
         return context
 
@@ -45,17 +43,15 @@ async def synthesis_agent(context: SharedContext) -> SharedContext:
     accepted = [c for c in context.critiqued_claims if not c.flagged]
     accepted_text = "\n".join(f"- \"{c.text}\"" for c in accepted) if accepted else "All claims accepted"
 
-    chunks_text = "\n".join(
-        f"[{chunk.chunk_id}]: {chunk.content}"
-        for chunk in context.retrieved_chunks
+    task_outputs_text = "\n\n".join(
+        f"[{task_id}]:\n{output}" for task_id, output in context.task_outputs.items()
     )
 
     user_message = (
         f"Original query: {context.original_query}\n\n"
-        f"Retrieval agent output:\n{retrieval_output.output_text}\n\n"
+        f"Sub-task outputs:\n{task_outputs_text}\n\n"
         f"Accepted claims:\n{accepted_text}\n\n"
         f"Flagged claims (do NOT include these as-is):\n{flagged_text}\n\n"
-        f"Source chunks for reference:\n{chunks_text}\n\n"
         f"Write the final answer with provenance map."
     )
 

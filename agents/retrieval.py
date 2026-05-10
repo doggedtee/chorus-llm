@@ -108,6 +108,8 @@ def retrieval_agent(context: SharedContext) -> SharedContext:
 
     try:
         all_chunks = []
+        task_outputs: dict[str, str] = {}  # task_id → Claude output for that task
+
         for task in context.sub_tasks:
             if task.dependencies:
                 dep_done = all(
@@ -116,40 +118,41 @@ def retrieval_agent(context: SharedContext) -> SharedContext:
                 )
                 if not dep_done:
                     continue
+
             chunks = _retrieve_for_task(task.description, tool_logger)
             for chunk in chunks:
                 chunk.used_for = task.task_id
             all_chunks.extend(chunks)
+
+            # build prompt with dependency outputs as context
+            dep_context = "\n\n".join(
+                f"Output of {dep_id}:\n{task_outputs[dep_id]}"
+                for dep_id in task.dependencies
+                if dep_id in task_outputs
+            )
+
+            chunks_text = "\n\n".join(
+                f"[{chunk.chunk_id}] (source: {chunk.source})\n{chunk.content}"
+                for chunk in chunks
+            )
+
+            response = llm.invoke([
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=(
+                    f"Sub-task: {task.description}\n\n"
+                    + (f"Context from previous tasks:\n{dep_context}\n\n" if dep_context else "")
+                    + f"Retrieved chunks:\n{chunks_text}\n\n"
+                    f"Answer this sub-task using the chunks with inline citations."
+                )),
+            ])
+
+            task_outputs[task.task_id] = response.content.strip()
+            token_count = (response.usage_metadata or {}).get("total_tokens", 0)
+            context.record_tokens("retrieval", token_count)
             task.status = "completed"
 
-        # spec requires at least 2 chunks for multi-hop reasoning
-        if len(all_chunks) < 2:
-            all_chunks.append(RetrievedChunk(
-                chunk_id="fallback_chunk",
-                content=f"General information about: {context.original_query}",
-                source="fallback",
-                relevance_score=0.3,
-            ))
-
         context.retrieved_chunks = all_chunks
-
-        chunks_text = "\n\n".join(
-            f"[{chunk.chunk_id}] (source: {chunk.source})\n{chunk.content}"
-            for chunk in all_chunks
-        )
-
-        response = llm.invoke([
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=(
-                f"Research query: {context.original_query}\n\n"
-                f"Retrieved chunks:\n{chunks_text}\n\n"
-                f"Answer the query using these chunks with inline citations."
-            )),
-        ])
-
-        answer = response.content.strip()
-        token_count = (response.usage_metadata or {}).get("total_tokens", 0)
-        context.record_tokens("retrieval", token_count)
+        context.task_outputs = task_outputs
 
         claims = [
             Claim(
@@ -160,15 +163,18 @@ def retrieval_agent(context: SharedContext) -> SharedContext:
             for chunk in all_chunks
         ]
 
+        all_outputs_text = "\n\n".join(
+            f"[{task_id}]:\n{output}" for task_id, output in task_outputs.items()
+        )
+
         context.set_agent_output("retrieval", AgentOutput(
             agent_id="retrieval",
-            output_text=answer,
+            output_text=all_outputs_text,
             claims=claims,
             chunks_used=[chunk.chunk_id for chunk in all_chunks],
-            token_count=token_count,
         ))
 
-        print(f"[retrieval] {len(all_chunks)} chunks retrieved for job {context.job_id}")
+        print(f"[retrieval] {len(all_chunks)} chunks, {len(task_outputs)} task outputs for job {context.job_id}")
     finally:
         db.close()
 
