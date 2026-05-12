@@ -10,7 +10,6 @@ class AgentID(str, Enum):
     RETRIEVAL = "retrieval"
     CRITIQUE = "critique"
     SYNTHESIS = "synthesis"
-    COMPRESSION = "compression"
     META = "meta"
 
 
@@ -83,9 +82,7 @@ class SharedContext(BaseModel):
     # orchestrator fills this — routing log
     routing_log: List[Dict[str, Any]] = []
 
-    # budget manager fills this
     token_usage: Dict[str, int] = {}        # {agent_id: tokens_used}
-    budget_violations: List[str] = []       # agent_ids that violated budget
 
     # retrieval agent fills this — per sub-task Claude outputs
     task_outputs: Dict[str, str] = {}  # task_id → reasoning output
@@ -110,6 +107,3 @@ class SharedContext(BaseModel):
     def record_tokens(self, agent_id: str, count: int):
         self.token_usage[agent_id] = self.token_usage.get(agent_id, 0) + count
 
-    def flag_budget_violation(self, agent_id: str):
-        if agent_id not in self.budget_violations:
-            self.budget_violations.append(agent_id)

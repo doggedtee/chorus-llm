@@ -117,8 +117,3 @@ async def log_routing(job_id: str, from_agent: str, to_agent: str, reason: str):
         db.close()
 
     await emit(job_id, "routing", from_agent=from_agent, to_agent=to_agent, reason=reason)
-
-
-async def emit_budget(job_id: str, summary: dict):
-    """Emit current budget status for SSE clients."""
-    await emit(job_id, "budget_update", budget=summary)
