@@ -3,6 +3,10 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
 from sqlalchemy.orm import Session
 from db.models import EvalRun, EvalResult, PromptRewrite
+from agents.decomposition import SYSTEM_PROMPT as DECOMP_PROMPT
+from agents.retrieval import SYSTEM_PROMPT as RETRIEVAL_PROMPT
+from agents.critique import SYSTEM_PROMPT as CRITIQUE_PROMPT
+from agents.synthesis import SYSTEM_PROMPT as SYNTH_PROMPT
 
 llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
 
@@ -22,61 +26,26 @@ JUSTIFICATION: <why this prompt needs changing>
 NEW_PROMPT:
 <the full rewritten system prompt>"""
 
-# current prompts for each agent — meta agent can propose rewrites for these
 AGENT_PROMPTS = {
-    "decomposition": """You are a decomposition agent. Your job is to break a research query into clear sub-tasks.
-
-Rules:
-- Break the query into 2-4 sub-tasks
-- Each sub-task must have a type: research, compute, lookup, or summarize
-- If a sub-task depends on results from another, list those task_ids in dependencies
-- Dependent tasks must not run before their dependencies complete
-- Return ONLY valid JSON, no extra text""",
-
-    "retrieval": """You are a retrieval agent. You receive research sub-tasks and retrieved chunks of information.
-
-Your job:
-1. Reason across ALL provided chunks (minimum 2 chunks required)
-2. For each part of your answer, cite exactly which chunk it came from using [chunk_id]
-3. Do NOT answer from memory — only use the provided chunks
-4. If chunks are insufficient, say so explicitly""",
-
-    "critique": """You are a critique agent. You review research outputs claim by claim.
-
-Your job:
-- Extract individual claims from the text
-- Assign a confidence score (0.0 to 1.0) to each claim
-- Flag claims that are unsupported, exaggerated, or contradict the source chunks
-- Be specific — flag the exact span of text, not the whole answer""",
-
-    "synthesis": """You are a synthesis agent. Your job is to produce a final answer by merging all agent outputs.
-
-Rules:
-- Use the retrieval agent output as your main source
-- If the critique agent flagged a claim, do NOT include it unless you can rephrase it accurately
-- Every sentence in your final answer must have a source
-- After your answer, include a PROVENANCE section""",
+    "decomposition": DECOMP_PROMPT,
+    "retrieval":     RETRIEVAL_PROMPT,
+    "critique":      CRITIQUE_PROMPT,
+    "synthesis":     SYNTH_PROMPT,
 }
 
 
 def _find_worst_dimension(results: list[EvalResult]) -> tuple[str, str]:
     """Find the dimension with the lowest average score and its responsible agent."""
     dimension_map = {
-        "correctness":       "retrieval",
-        "citation":          "retrieval",
-        "contradiction":     "synthesis",
-        "tool_efficiency":   "orchestrator",
-        "budget_compliance": "orchestrator",
-        "critique_agreement": "critique",
+        "correctness":    "retrieval",
+        "citation":       "retrieval",
+        "critique_quality": "critique",
     }
 
     dim_scores = {
-        "correctness":        [r.score_correctness for r in results],
-        "citation":           [r.score_citation for r in results],
-        "contradiction":      [r.score_contradiction for r in results],
-        "tool_efficiency":    [r.score_tool_efficiency for r in results],
-        "budget_compliance":  [r.score_budget_compliance for r in results],
-        "critique_agreement": [r.score_critique_agreement for r in results],
+        "correctness":    [r.score_correctness for r in results],
+        "citation":       [r.score_citation for r in results],
+        "critique_quality": [r.score_critique_quality for r in results],
     }
 
     averages = {

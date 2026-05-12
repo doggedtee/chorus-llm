@@ -96,10 +96,7 @@ class EvalResult(Base):
 
     score_correctness = Column(Float)
     score_citation = Column(Float)
-    score_contradiction = Column(Float)
-    score_tool_efficiency = Column(Float)
-    score_budget_compliance = Column(Float)
-    score_critique_agreement = Column(Float)
+    score_critique_quality = Column(Float)
     total_score = Column(Float)
 
     justification = Column(JSON)

@@ -36,10 +36,7 @@ def get_latest_eval(db: Session = Depends(get_db)):
                 "scores": {
                     "correctness": r.score_correctness,
                     "citation": r.score_citation,
-                    "contradiction": r.score_contradiction,
-                    "tool_efficiency": r.score_tool_efficiency,
-                    "budget_compliance": r.score_budget_compliance,
-                    "critique_agreement": r.score_critique_agreement,
+                    "critique_quality": r.score_critique_quality,
                 },
                 "justification": r.justification,
             }

@@ -1,7 +1,12 @@
+import os
+import json
+import anthropic
 from pydantic import BaseModel
 from typing import Optional
 from core.context import SharedContext
 from eval.test_cases import TestCase
+
+_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 class DimensionScore(BaseModel):
@@ -13,33 +18,43 @@ class EvalScore(BaseModel):
     case_id: str
     correctness: DimensionScore
     citation: DimensionScore
-    contradiction: DimensionScore
-    tool_efficiency: DimensionScore
-    budget_compliance: DimensionScore
-    critique_agreement: DimensionScore
+    critique_quality: DimensionScore
     total: float
 
 
-def score_correctness(case: TestCase, context: SharedContext) -> DimensionScore:
-    """Did the answer contain the expected keywords or match the expected answer?"""
-    answer = (context.final_answer or "").lower()
+def _llm_score(prompt: str) -> DimensionScore:
+    """Call Claude to score a dimension. Returns a neutral score on failure."""
+    try:
+        response = _client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        data = json.loads(response.content[0].text.strip())
+        return DimensionScore(score=float(data["score"]), justification=data["justification"])
+    except Exception as e:
+        return DimensionScore(score=0.5, justification=f"LLM scoring failed: {e}")
 
+
+def score_correctness(case: TestCase, context: SharedContext) -> DimensionScore:
+    answer = context.final_answer or ""
     if not answer:
         return DimensionScore(score=0.0, justification="No final answer was produced.")
 
+    expected_section = ""
+    if case.expected_answer:
+        expected_section += f"Expected answer: {case.expected_answer}\n"
     if case.expected_keywords:
-        matched = [kw for kw in case.expected_keywords if kw.lower() in answer]
-        score = len(matched) / len(case.expected_keywords)
-        justification = (
-            f"Matched {len(matched)}/{len(case.expected_keywords)} expected keywords: "
-            f"{matched}."
-        )
-    else:
-        # ambiguous cases — check if answer is non-empty and on-topic
-        score = 0.7 if len(answer) > 100 else 0.3
-        justification = "No expected keywords defined (ambiguous case). Scored on answer length and presence."
+        expected_section += f"Expected keywords: {', '.join(case.expected_keywords)}\n"
 
-    return DimensionScore(score=round(score, 2), justification=justification)
+    prompt = (
+        f"Score how correct this answer is for the given question.\n\n"
+        f"Question: {case.query}\n"
+        f"{expected_section}"
+        f"Actual answer: {answer}\n\n"
+        f"Return JSON only: {{\"score\": <0.0 to 1.0>, \"justification\": \"<one sentence>\"}}"
+    )
+    return _llm_score(prompt)
 
 
 def score_citation(case: TestCase, context: SharedContext) -> DimensionScore:
@@ -66,102 +81,39 @@ def score_citation(case: TestCase, context: SharedContext) -> DimensionScore:
     return DimensionScore(score=score, justification=justification)
 
 
-def score_contradiction(case: TestCase, context: SharedContext) -> DimensionScore:
-    """Were flagged contradictions resolved in the final answer?"""
+def score_critique_quality(context: SharedContext) -> DimensionScore:
     flagged = [c for c in context.critiqued_claims if c.flagged]
-
-    if not flagged:
-        return DimensionScore(score=1.0, justification="No contradictions flagged by critique agent.")
-
-    final_answer = (context.final_answer or "").lower()
-    resolved = [
-        c for c in flagged
-        if c.text.lower()[:40] not in final_answer
-    ]
-
-    score = round(len(resolved) / len(flagged), 2)
-    justification = (
-        f"{len(flagged)} claim(s) flagged by critique. "
-        f"{len(resolved)} resolved (removed or rephrased) in final answer. "
-        f"Resolution rate: {score:.0%}."
-    )
-
-    return DimensionScore(score=score, justification=justification)
-
-
-def score_tool_efficiency(case: TestCase, context: SharedContext) -> DimensionScore:
-    """Did agents avoid unnecessary tool calls? Penalize excessive retries."""
-    tool_results = context.tool_results
-    routing_log = context.routing_log
-
-    # count total tool calls from routing log
-    tool_events = [e for e in routing_log if "tool" in e.get("from", "").lower()]
-    total_calls = len(tool_events)
-
-    # ideal: 2-4 tool calls for a normal query
-    if total_calls == 0:
-        return DimensionScore(score=0.5, justification="No tool calls recorded. Cannot assess efficiency.")
-    elif total_calls <= 4:
-        score = 1.0
-        justification = f"{total_calls} tool call(s) — within efficient range (≤4)."
-    elif total_calls <= 7:
-        score = 0.7
-        justification = f"{total_calls} tool calls — slightly above ideal range."
-    else:
-        score = 0.3
-        justification = f"{total_calls} tool calls — excessive, suggests unnecessary retries or redundant calls."
-
-    return DimensionScore(score=score, justification=justification)
-
-
-def score_budget_compliance(case: TestCase, context: SharedContext) -> DimensionScore:
-    """Did all agents stay within their token budgets?"""
-    violations = context.budget_violations
-
-    if not violations:
-        return DimensionScore(score=1.0, justification="No budget violations recorded. All agents complied.")
-
-    justification = (
-        f"{len(violations)} budget violation(s): {violations}. "
-        f"These agents exceeded their token budgets."
-    )
-    score = max(0.0, 1.0 - (len(violations) * 0.25))
-
-    return DimensionScore(score=round(score, 2), justification=justification)
-
-
-def score_critique_agreement(case: TestCase, context: SharedContext) -> DimensionScore:
-    """Does the final answer agree with the critique agent's accepted claims?"""
     accepted = [c for c in context.critiqued_claims if not c.flagged]
 
-    if not accepted:
-        return DimensionScore(score=0.5, justification="No accepted claims from critique agent to compare.")
+    if not flagged and not accepted:
+        return DimensionScore(score=0.5, justification="No claims from critique agent to evaluate.")
 
-    final_answer = (context.final_answer or "").lower()
-    agreed = [c for c in accepted if any(word in final_answer for word in c.text.lower().split()[:5])]
+    final_answer = context.final_answer or ""
+    if not final_answer:
+        return DimensionScore(score=0.0, justification="No final answer was produced.")
 
-    score = round(len(agreed) / len(accepted), 2)
-    justification = (
-        f"{len(agreed)}/{len(accepted)} accepted claims reflected in final answer. "
-        f"Agreement rate: {score:.0%}."
+    flagged_text = "\n".join(f"- {c.text}" for c in flagged) if flagged else "None"
+    accepted_text = "\n".join(f"- {c.text}" for c in accepted) if accepted else "None"
+
+    prompt = (
+        f"The critique agent reviewed claims and produced two lists.\n\n"
+        f"Flagged (bad — should be removed or fixed):\n{flagged_text}\n\n"
+        f"Approved (good — should appear in the final answer):\n{accepted_text}\n\n"
+        f"Final answer: {final_answer}\n\n"
+        f"Score 0.0 to 1.0 how well the final answer handled both lists: "
+        f"bad claims removed and good claims kept. 1.0 means perfect on both.\n\n"
+        f"Return JSON only: {{\"score\": <0.0 to 1.0>, \"justification\": \"<one sentence>\"}}"
     )
-
-    return DimensionScore(score=score, justification=justification)
+    return _llm_score(prompt)
 
 
 def score_case(case: TestCase, context: SharedContext) -> EvalScore:
-    """Run all 6 scoring dimensions for one test case."""
-    correctness      = score_correctness(case, context)
-    citation         = score_citation(case, context)
-    contradiction    = score_contradiction(case, context)
-    tool_efficiency  = score_tool_efficiency(case, context)
-    budget_compliance = score_budget_compliance(case, context)
-    critique_agreement = score_critique_agreement(case, context)
+    correctness     = score_correctness(case, context)
+    citation        = score_citation(case, context)
+    critique_quality = score_critique_quality(context)
 
-    # equal weights for all 6 dimensions
     total = round(
-        (correctness.score + citation.score + contradiction.score +
-         tool_efficiency.score + budget_compliance.score + critique_agreement.score) / 6,
+        (correctness.score + citation.score + critique_quality.score) / 3,
         2,
     )
 
@@ -169,9 +121,6 @@ def score_case(case: TestCase, context: SharedContext) -> EvalScore:
         case_id=case.case_id,
         correctness=correctness,
         citation=citation,
-        contradiction=contradiction,
-        tool_efficiency=tool_efficiency,
-        budget_compliance=budget_compliance,
-        critique_agreement=critique_agreement,
+        critique_quality=critique_quality,
         total=total,
     )

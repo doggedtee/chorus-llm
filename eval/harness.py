@@ -59,8 +59,7 @@ def run_eval() -> str:
     all_scores = []
     category_totals = {"baseline": [], "ambiguous": [], "adversarial": []}
     dimension_totals = {
-        "correctness": [], "citation": [], "contradiction": [],
-        "tool_efficiency": [], "budget_compliance": [], "critique_agreement": [],
+        "correctness": [], "citation": [], "critique_quality": [],
     }
 
     for case in ALL_CASES:
@@ -77,18 +76,12 @@ def run_eval() -> str:
             actual_answer=context.final_answer,
             score_correctness=score.correctness.score,
             score_citation=score.citation.score,
-            score_contradiction=score.contradiction.score,
-            score_tool_efficiency=score.tool_efficiency.score,
-            score_budget_compliance=score.budget_compliance.score,
-            score_critique_agreement=score.critique_agreement.score,
+            score_critique_quality=score.critique_quality.score,
             total_score=score.total,
             justification={
                 "correctness": score.correctness.justification,
                 "citation": score.citation.justification,
-                "contradiction": score.contradiction.justification,
-                "tool_efficiency": score.tool_efficiency.justification,
-                "budget_compliance": score.budget_compliance.justification,
-                "critique_agreement": score.critique_agreement.justification,
+                "critique_quality": score.critique_quality.justification,
             },
             exact_prompts={
                 "decomposition": DECOMP_PROMPT,
@@ -116,10 +109,7 @@ def run_eval() -> str:
         category_totals[case.category].append(score.total)
         dimension_totals["correctness"].append(score.correctness.score)
         dimension_totals["citation"].append(score.citation.score)
-        dimension_totals["contradiction"].append(score.contradiction.score)
-        dimension_totals["tool_efficiency"].append(score.tool_efficiency.score)
-        dimension_totals["budget_compliance"].append(score.budget_compliance.score)
-        dimension_totals["critique_agreement"].append(score.critique_agreement.score)
+        dimension_totals["critique_quality"].append(score.critique_quality.score)
 
     # compute averages
     def avg(lst): return round(sum(lst) / len(lst), 2) if lst else 0.0

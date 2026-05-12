@@ -5,9 +5,9 @@ from core.context import SharedContext, RetrievedChunk, AgentOutput, Claim
 from core.tool_logger import ToolLogger
 from db.database import SessionLocal
 from tools.web_search import web_search
-from tools.sql_lookup import sql_lookup
 
 llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
+llm_fast = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
 
 SYSTEM_PROMPT = """You are a retrieval agent. You receive research sub-tasks and retrieved chunks of information.
 
@@ -27,6 +27,18 @@ CITATIONS:
 - chunk_2: used to support the claim about coral bleaching"""
 
 
+def _make_search_query(description: str) -> str:
+    """Ask Claude to turn a verbose task description into a short web search query."""
+    response = llm_fast.invoke([
+        HumanMessage(content=(
+            f"Convert this task description into a short web search query (5 words max).\n"
+            f"Return ONLY the query, nothing else.\n\n"
+            f"Task: {description}"
+        ))
+    ])
+    return response.content.strip()
+
+
 def _accept_web_search(result, attempt):
     """Decide if web search result is good enough."""
     if result.failure_mode == "none" and result.total_found >= 1:
@@ -43,59 +55,36 @@ def _accept_web_search(result, attempt):
     return False, "unknown failure", None
 
 
-def _accept_sql(result, attempt):
-    """Decide if SQL lookup result is good enough."""
-    if result.failure_mode == "none" and result.row_count >= 1:
-        return True, None, None
-    if result.failure_mode == "empty":
-        return False, "empty SQL result", {"question": "list all papers"}
-    if result.failure_mode == "malformed":
-        return False, "malformed SQL", {"question": "list papers"}
-    return False, "unknown failure", None
+def _retrieve_for_task(task, tool_logger: ToolLogger) -> list[RetrievedChunk]:
+    """Retrieve chunks for one sub-task. Only calls web_search for research/lookup tasks."""
+    if task.task_type != "research":
+        return []
 
+    words = task.description.split()
+    query = _make_search_query(task.description) if len(words) > 10 else task.description
+    print(f"[retrieval] search query for '{task.task_id}': {query}")
 
-def _retrieve_for_task(task_description: str, tool_logger: ToolLogger) -> list[RetrievedChunk]:
-    """Retrieve chunks for one sub-task using web_search and sql_lookup with retry."""
-    chunks = []
-
-    # web_search with retry (up to 2 retries)
     web_result = tool_logger.log_with_retry(
         agent_id="retrieval",
         tool_name="web_search",
         call_fn=web_search,
-        input_data={"query": task_description},
+        input_data={"query": query},
         accept_fn=_accept_web_search,
         max_retries=2,
     )
-    if web_result.failure_mode == "none":
-        for r in web_result.results:
-            chunks.append(RetrievedChunk(
-                chunk_id=f"web_{uuid.uuid4().hex[:6]}",
-                content=r.snippet,
-                source=r.url,
-                relevance_score=r.relevance_score,
-            ))
 
-    # sql_lookup with retry
-    sql_result = tool_logger.log_with_retry(
-        agent_id="retrieval",
-        tool_name="sql_lookup",
-        call_fn=sql_lookup,
-        input_data={"question": task_description},
-        accept_fn=_accept_sql,
-        max_retries=2,
-    )
-    if sql_result.failure_mode == "none" and sql_result.rows:
-        for row in sql_result.rows[:2]:
-            content = " | ".join(str(v) for v in row)
-            chunks.append(RetrievedChunk(
-                chunk_id=f"db_{uuid.uuid4().hex[:6]}",
-                content=content,
-                source="research_database",
-                relevance_score=0.80,
-            ))
+    if web_result.failure_mode != "none":
+        return []
 
-    return chunks
+    return [
+        RetrievedChunk(
+            chunk_id=f"web_{uuid.uuid4().hex[:6]}",
+            content=r.snippet,
+            source=r.url,
+            relevance_score=r.relevance_score,
+        )
+        for r in web_result.results
+    ]
 
 
 def retrieval_agent(context: SharedContext) -> SharedContext:
@@ -124,7 +113,7 @@ def retrieval_agent(context: SharedContext) -> SharedContext:
                 if not dep_done:
                     continue
 
-                chunks = _retrieve_for_task(task.description, tool_logger)
+                chunks = _retrieve_for_task(task, tool_logger)
                 for chunk in chunks:
                     chunk.used_for = task.task_id
                 all_chunks.extend(chunks)
