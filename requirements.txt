@@ -12,3 +12,4 @@ anthropic
 
 python-dotenv
 sse-starlette
+tavily-python
